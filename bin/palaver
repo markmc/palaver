@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+
+#
+# Copyright 2012 Red Hat, Inc.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+#
+
+import argparse
+import json
+import string
+import subprocess
+import sys
+
+from plvr import cli
+from plvr import git
+from plvr import notes
+
+# palaver list                     # list commits on master
+# palaver list none                # list unreviewed commits
+# palaver list pass                # list rejected commits
+# palaver list defer               # list commits deferred until later
+# palaver list pick                # list commits flagged for backporting
+# palaver list proposed            # list commits already proposed
+# palaver list merged              # list commits already merged
+#
+# palaver show $commit             # show all the comments on a given commit
+#
+# palaver comment $commit -m 'foo' # add a comment to $commit
+# palaver comment $commit pass     # reject the commit
+#
+# palaver review                   # interactive mode
+#
+# (todo)
+# palaver cherry $commit           # cherry-pick a commit
+# palaver merge remote/notes       # cat_sort_uniq merge someone else's notes
+#
+
+GIT_RANGE = '2012.1..origin/master'
+
+
+def do_list(args):
+    for note in notes.iter_notes(GIT_RANGE, args.state):
+        print note.commit.id, note.commit.shortlog,
+        print string.join([(a + ":" + v)
+                           for (a, v) in note.states_by_author().items()])
+
+
+def do_show(args):
+    commit = notes.Commit.get(args.commit)
+
+    print commit.id, commit.shortlog
+
+    for comment in commit.get_note().comments:
+        print "    ",
+        print comment.author, comment.state,
+        print comment.message if comment.message else ""
+
+
+def do_comment(args):
+    notes.Commit.get(args.commit).add_comment(git.whoami(),
+                                              args.state,
+                                              args.message)
+
+
+def do_review(args):
+    for note in notes.iter_notes(GIT_RANGE, 'none'):
+        print note.commit.id, note.commit.shortlog
+        option = cli.get_option('  ',
+                                ['skip', 'quit'] + notes.Comment.STATES,
+                                default='skip')
+
+        if option in notes.Comment.STATES:
+            note.commit.add_comment(git.whoami(),
+                                    option,
+                                    cli.get_answer("    message: "))
+        elif option == 'skip':
+            continue
+        elif option == 'quit':
+            return
+        else:
+            print '   Unknown option: ' + option
+
+
+def _add_state_arg(parser, extra_states=[]):
+    valid_states = notes.Comment.STATES + extra_states
+    parser.add_argument('state', nargs='?', metavar='STATE',
+                        choices=valid_states,
+                        help='One of %s' % string.join(valid_states, ','))
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Stable branch notes editor')
+    subparsers = parser.add_subparsers()
+
+    parser_list = subparsers.add_parser('list')
+    parser_list.set_defaults(func=do_list)
+    _add_state_arg(parser_list, extra_states=['none'])
+
+    parser_show = subparsers.add_parser('show')
+    parser_show.set_defaults(func=do_show)
+    parser_show.add_argument('commit', metavar='COMMIT', help='A commit ID')
+
+    parser_comment = subparsers.add_parser('comment')
+    parser_comment.set_defaults(func=do_comment)
+    parser_comment.add_argument('commit', metavar='COMMIT', help='A commit ID')
+    _add_state_arg(parser_comment)
+    parser_comment.add_argument('-m', '--message', metavar='MESSAGE',
+                                help='a comment message')
+
+    parser_review = subparsers.add_parser('review')
+    parser_review.set_defaults(func=do_review)
+
+    args = parser.parse_args()
+
+    try:
+        args.func(args)
+    except git.GitError, ge:
+        cli.error(str(ge))
+
+
+if __name__ == "__main__":
+    main()
